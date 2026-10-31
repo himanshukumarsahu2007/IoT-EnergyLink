@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="IoT EnergyLink: real-time energy telemetry dashboard with network resilience.">
+<title>IoT EnergyLink</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root{--bg:#0b1419;--ink:#e9f1f5;--muted:#a3b5c0;--amber:#ffb44d;--teal:#4fd6c8;--coral:#ff7070;--ok:#6ee7a0;--warn:#ffa14d}
+  body{font-family:Sora,system-ui,sans-serif;color:var(--ink);background:var(--bg);min-height:100vh;
+    background-image:radial-gradient(60rem 30rem at 10% -10%,rgba(79,214,200,.14),transparent),
+    radial-gradient(50rem 30rem at 100% 0%,rgba(255,180,77,.10),transparent);background-attachment:fixed}
+  .glass{background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.12);border-radius:18px;
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .num{font-variant-numeric:tabular-nums}
+  .muted{color:var(--muted)}
+  .card.alert{background:rgba(255,112,112,.16);border-color:var(--coral);animation:pulse 1.4s ease-in-out infinite}
+  .card.alert .val{color:var(--coral)}
+  @keyframes pulse{50%{box-shadow:0 0 0 4px rgba(255,112,112,.25)}}
+  .dot{width:.7rem;height:.7rem;border-radius:50%;display:inline-block}
+  .s-connecting .dot{background:var(--amber);animation:pulse 1s infinite}
+  .s-online .dot{background:var(--ok)} .s-latency .dot{background:var(--warn)} .s-offline .dot{background:var(--coral)}
+  :focus-visible{outline:3px solid var(--teal);outline-offset:2px}
+  input,select{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.25);border-radius:10px;padding:.5rem .7rem;color:var(--ink)}
+  button.btn{border-radius:10px;padding:.55rem 1rem;font-weight:600;background:var(--teal);color:#06211e}
+  button.btn:hover{filter:brightness(1.1)}
+  .skip{position:absolute;left:-999px} .skip:focus{left:1rem;top:1rem;background:#fff;color:#000;padding:.5rem;z-index:9}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to dashboard</a>
+<header class="max-w-6xl mx-auto px-4 pt-6 flex flex-wrap items-center justify-between gap-4">
+  <div>
+    <h1 class="text-3xl sm:text-4xl font-bold tracking-tight">IoT Energy<span style="color:var(--teal)">Link</span></h1>
+    <p class="muted text-sm mt-1">Live power telemetry with automatic failover to a simulated stream.</p>
+  </div>
+  <div class="flex flex-wrap items-center gap-3">
+    <div id="netStatus" class="glass px-4 py-2 flex items-center gap-2 s-connecting" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span><strong id="netLabel">Connecting</strong> <span id="netDetail" class="muted text-sm"></span></span>
+    </div>
+    <label class="glass px-4 py-2 flex items-center gap-2 cursor-pointer">
+      <input id="demoToggle" type="checkbox" class="w-4 h-4" aria-describedby="demoNote">
+      <span>Demo mode</span>
+    </label>
+  </div>
+</header>
+<p id="demoNote" class="max-w-6xl mx-auto px-4 muted text-xs mt-2"></p>
+
+<main id="main" class="max-w-6xl mx-auto px-4 py-6 space-y-6">
+  <div id="alertBanner" class="hidden glass px-4 py-3 border-red-400" role="alert" style="border-color:var(--coral);color:#ffd3d3"></div>
+
+  <section aria-label="Live telemetry" id="cards" class="grid grid-cols-2 lg:grid-cols-3 gap-4"></section>
+
+  <section class="glass p-4 sm:p-5" aria-labelledby="chartTitle">
+    <div class="flex flex-wrap justify-between gap-2 mb-3">
+      <h2 id="chartTitle" class="text-lg font-semibold">Power and voltage, last 50 samples</h2>
+      <span class="muted text-sm" id="sampleCount"></span>
+    </div>
+    <div class="relative h-64 sm:h-80"><canvas id="chart" role="img" aria-label="Line chart of active power in watts and voltage in volts over time"></canvas></div>
+  </section>
+
+  <div class="grid lg:grid-cols-2 gap-6">
+    <section class="glass p-5" aria-labelledby="billTitle">
+      <h2 id="billTitle" class="text-lg font-semibold mb-3">Billing estimate</h2>
+      <div class="flex flex-wrap gap-3 items-end mb-4">
+        <div><label for="tariff" class="block text-sm muted mb-1">Tariff (₹ per kWh)</label>
+          <input id="tariff" type="number" min="0" step="0.01" value="7.01" inputmode="decimal" class="w-32"></div>
+      </div>
+      <dl class="grid grid-cols-3 gap-3 text-center">
+        <div><dt class="muted text-sm">This session</dt><dd id="costSession" class="num text-xl font-semibold"></dd></div>
+        <div><dt class="muted text-sm">Per day</dt><dd id="costDay" class="num text-xl font-semibold"></dd></div>
+        <div><dt class="muted text-sm">Per month</dt><dd id="costMonth" class="num text-xl font-semibold"></dd></div>
+      </dl>
+      <p class="muted text-xs mt-3">Projections assume the current live power load continues for 24 hours, or 30 days.</p>
+    </section>
+
+    <section class="glass p-5" aria-labelledby="expTitle">
+      <h2 id="expTitle" class="text-lg font-semibold mb-3">Session data</h2>
+      <p class="muted text-sm mb-4">Download every sample recorded since this page opened. Only the most recent 5,000 are kept.</p>
+      <div class="flex flex-wrap items-center gap-3">
+        <button id="exportBtn" class="btn" type="button">Download CSV</button>
+        <span id="recCount" class="muted text-sm" aria-live="polite"></span>
+      </div>
+    </section>
+  </div>
+</main>
+<footer class="max-w-6xl mx-auto px-4 pb-8 muted text-xs">Listening on Firebase Realtime Database node <code>/Energy</code>.</footer>
+
+<script type="module">
+/* ==========================================================================
+ * IoT EnergyLink — single-file dashboard
+ * ======================================================================== */
+
+/* ---------- 1. CONFIG: paste your Firebase keys here ---------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDtph1BJ-Ltb_MPuS72A3AltlQAhf-H51o",
+  authDomain: "iot-energylink.firebaseapp.com",
+  databaseURL: "https://iot-energylink-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "iot-energylink",
+  appId: "1:934217742127:web:iot-dashboard"
+};
+const DB_NODE = "/Energy";
+const FIREBASE_VERSION = "10.14.1";
+
+const CONFIG = Object.freeze({
+  MAX_CHART_POINTS: 50,
+  MAX_RECORDS: 5000,
+  DEMO_INTERVAL_MS: 1000,
+  LATENCY_WARN_MS: 5000,
+  STALE_FAIL_MS: 15000,
+  CONNECT_TIMEOUT_MS: 8000,
+  MAX_DT_S: 10,
+  VOLT_MIN: 200, VOLT_MAX: 240, CURRENT_MAX: 15,
+  MAX_VALID_POWER_W: 10000 // Upper limit to reject hardware spikes
+});
+
+/* ---------- 2. STATE STORE ---------- */
+const state = {
+  net: "connecting",
+  hasConfig: !FIREBASE_CONFIG.apiKey.startsWith("YOUR_") && !FIREBASE_CONFIG.databaseURL.includes("YOUR_"),
+  fbLinked: false,
+  demoForced: false,
+  autoDemo: false,
+  latest: null,
+  lastSampleAt: 0,
+  records: [],
+  sessionKwh: 0, powerSum: 0, powerCount: 0, sessionStart: Date.now(),
+  alerts: [],
+  offlineReason: ""
+};
+const listeners = new Set();
+const subscribe = (fn) => (listeners.add(fn), () => listeners.delete(fn));
+
+let queued = false;
+function setState(patch) {
+  Object.assign(state, patch);
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; listeners.forEach((fn) => fn(state)); });
+}
+const isDemo = () => state.demoForced || state.autoDemo || !state.hasConfig;
+
+/* ---------- 3. PURE HELPERS ---------- */
+const num = (v) => { const n = typeof v === "string" ? parseFloat(v) : v; return Number.isFinite(n) ? n : null; };
+const pick = (o, keys) => { for (const k of keys) if (o[k] !== undefined) return num(o[k]); return null; };
+const fmt = (v, d = 1) => (v == null ? "--" : v.toFixed(d));
+const inr = (v, d = 2) => "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+function normalize(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  let voltage = pick(raw, ["Voltage", "voltage", "V"]);
+  let current = pick(raw, ["Current", "current", "I"]);
+  if (voltage == null || current == null) return null;
+  
+  const pf = clamp(pick(raw, ["PF", "pf", "PowerFactor", "powerFactor"]) ?? 1, 0, 1);
+  
+  // Base power reading
+  let power = pick(raw, ["Power", "power", "P"]);
+  if (power == null) {
+    power = voltage * current * pf;
+  }
+
+  // ABSOLUTE SPIKE PROTECTION: Reject physically impossible startup glitches
+  if (power < 0 || power > CONFIG.MAX_VALID_POWER_W) {
+    power = 0; // Force glitched power to 0
+  }
+  if (current < 0 || current > 50) {
+    current = 0; // Force glitched current to 0
+  }
+
+  const prevE = state.latest ? state.latest.energy : 0;
+  let rawEnergy = pick(raw, ["Energy", "energy", "kWh"]);
+  if (rawEnergy == null || rawEnergy < 0 || rawEnergy > 100000) {
+    rawEnergy = prevE;
+  }
+
+  return {
+    ts: Date.now(), voltage, current, power, pf,
+    energy: rawEnergy,
+    frequency: pick(raw, ["Frequency", "frequency", "Hz"]) ?? 50,
+    source: "firebase"
+  };
+}
+
+const csvCell = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+function toCSV(rows) {
+  const head = ["timestamp", "source", "voltage_v", "current_a", "power_w", "energy_kwh", "frequency_hz", "power_factor", "alert"];
+  const lines = rows.map((r) => [new Date(r.ts).toISOString(), r.source, r.voltage.toFixed(2), r.current.toFixed(3),
+    r.power.toFixed(1), r.energy.toFixed(4), r.frequency.toFixed(2), r.pf.toFixed(3), alertsFor(r).join("|")].map(csvCell).join(","));
+  return [head.join(","), ...lines].join("\r\n");
+}
+
+function alertsFor(s) {
+  const out = [];
+  if (s.voltage < CONFIG.VOLT_MIN) out.push(`Voltage low (${s.voltage.toFixed(0)} V)`);
+  if (s.voltage > CONFIG.VOLT_MAX) out.push(`Voltage high (${s.voltage.toFixed(0)} V)`);
+  if (s.current > CONFIG.CURRENT_MAX) out.push(`Current spike (${s.current.toFixed(1)} A)`);
+  return out;
+}
+
+/* ---------- 4. DATA PIPELINE ---------- */
+function ingest(s) {
+  const dt = state.lastSampleAt ? clamp((s.ts - state.lastSampleAt) / 1000, 0, CONFIG.MAX_DT_S) : 0;
+  const kwh = (s.power * dt) / 3.6e6; // Calculate kWh based on sanitized live power
+  if (s.source === "demo") s.energy = (state.latest ? state.latest.energy : 0) + kwh;
+  const records = state.records;
+  records.push(s);
+  if (records.length > CONFIG.MAX_RECORDS) records.splice(0, records.length - CONFIG.MAX_RECORDS);
+  setState({
+    latest: s, lastSampleAt: s.ts, records,
+    sessionKwh: state.sessionKwh + kwh,
+    powerSum: state.powerSum + s.power, powerCount: state.powerCount + 1,
+    alerts: alertsFor(s),
+    offlineReason: s.source === "firebase" ? "" : state.offlineReason
+  });
+  updateNet();
+}
+
+let demoTimer = null, load = 0.43, fault = 0, tick = 0;
+function mockSample() {
+  tick++;
+  if (Math.random() < 0.08) load = clamp(load + (Math.random() - 0.5) * 0.2, 0.2, 5);
+  if (fault === 0 && Math.random() < 0.01) fault = 6;
+  let voltage = 230 + 4 * Math.sin(tick / 15) + (Math.random() - 0.5) * 2;
+  if (fault > 0) { voltage = fault > 3 ? voltage - 38 : voltage + 14; fault--; }
+  const current = clamp(load + (Math.random() - 0.5) * 0.05, 0, 15);
+  const pf = clamp(0.98 + (Math.random() - 0.5) * 0.02, 0.8, 1);
+  return { ts: Date.now(), voltage, current, pf, power: voltage * current * pf, energy: 0,
+    frequency: 50 + (Math.random() - 0.5) * 0.12, source: "demo" };
+}
+function startDemo() { if (!demoTimer) demoTimer = setInterval(() => ingest(mockSample()), CONFIG.DEMO_INTERVAL_MS); }
+function stopDemo() { clearInterval(demoTimer); demoTimer = null; }
+function syncDemo() { isDemo() ? startDemo() : stopDemo(); }
+
+function setOffline(reason) {
+  setState({ offlineReason: reason, autoDemo: state.hasConfig });
+  syncDemo();
+  updateNet();
+}
+
+/* ---- 4b. Firebase ---- */
+async function connectFirebase() {
+  try {
+    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+    const [{ initializeApp }, { getDatabase, ref, onValue }] = await Promise.all([
+      import(`${base}/firebase-app.js`), import(`${base}/firebase-database.js`)
+    ]);
+    const db = getDatabase(initializeApp(FIREBASE_CONFIG));
+    onValue(ref(db, ".info/connected"), (snap) => { setState({ fbLinked: snap.val() === true }); updateNet(); });
+    onValue(ref(db, DB_NODE), (snap) => {
+      try {
+        if (state.demoForced) return;
+        const sample = normalize(snap.val());
+        if (!sample) return setOffline("No valid data found at /Energy.");
+        if (state.autoDemo) setState({ autoDemo: false }), syncDemo();
+        ingest(sample);
+      } catch (err) { setOffline("Could not read the latest data."); }
+    }, () => setOffline("Firebase connection failed (check your keys and database rules)."));
+  } catch (err) {
+    setOffline("Could not load Firebase.");
+  }
+}
+
+/* ---- 4c. Network state machine + watchdog ---- */
+function updateNet() {
+  const age = state.lastSampleAt ? Date.now() - state.lastSampleAt : Infinity;
+  let net;
+  if (!navigator.onLine || state.offlineReason) net = "offline";
+  else if (isDemo() && !state.demoForced && state.hasConfig && !state.fbLinked) net = state.autoDemo ? "offline" : "connecting";
+  else if (age === Infinity) net = "connecting";
+  else if (age > CONFIG.LATENCY_WARN_MS) net = "latency";
+  else net = "online";
+  if (net !== state.net) setState({ net });
+}
+function startWatchdog() {
+  setInterval(() => {
+    const age = Date.now() - state.lastSampleAt;
+    const dead = state.hasConfig && !state.demoForced && !state.autoDemo &&
+      (!navigator.onLine || (state.lastSampleAt && age > CONFIG.STALE_FAIL_MS));
+    if (dead) setOffline(`No data received for ${CONFIG.STALE_FAIL_MS / 1000} seconds.`);
+    updateNet(); renderNetDetail();
+  }, 1000);
+  setTimeout(() => { if (state.hasConfig && !state.lastSampleAt && !state.autoDemo) setOffline("Could not reach Firebase."); }, CONFIG.CONNECT_TIMEOUT_MS);
+  addEventListener("offline", () => setOffline("Your device lost its internet connection."));
+  addEventListener("online", () => { setState({ offlineReason: "" }); updateNet(); });
+}
+
+/* ---------- 5. RENDER COMPONENTS ---------- */
+const $ = (id) => document.getElementById(id);
+function setText(id, text) {
+  const el = $(id);
+  if (el && el.textContent !== text) el.textContent = text;
+}
+const NET_LABELS = { connecting: "Connecting", online: "Online", latency: "High latency", offline: "Offline" };
+
+function renderNet(s) {
+  $("netStatus").className = `glass px-4 py-2 flex items-center gap-2 s-${s.net}`;
+  setText("netLabel", NET_LABELS[s.net]);
+  renderNetDetail();
+  const demoOn = isDemo();
+  $("demoToggle").checked = demoOn;
+  $("demoToggle").disabled = !s.hasConfig;
+  setText("demoNote", s.offlineReason ? `${s.offlineReason} Simulated data is shown until live data returns.`
+    : !s.hasConfig ? "No Firebase keys found, so a simulated stream is running. Paste your keys into FIREBASE_CONFIG to go live."
+    : s.autoDemo ? "Connection lost or unavailable. Simulated data is shown until live data returns."
+    : s.demoForced ? "Demo mode is on. Live Firebase data is ignored." : "");
+}
+function renderNetDetail() {
+  const age = state.lastSampleAt ? Math.round((Date.now() - state.lastSampleAt) / 1000) : null;
+  const src = isDemo() ? "simulated" : "Firebase";
+  setText("netDetail", age == null ? "waiting for data" : `${src}, last reading ${age}s ago`);
+}
+
+const METRICS = [
+  { key: "voltage", label: "Voltage", unit: "V", d: 1, alert: (s) => s.voltage < CONFIG.VOLT_MIN || s.voltage > CONFIG.VOLT_MAX, hint: `Safe range ${CONFIG.VOLT_MIN} to ${CONFIG.VOLT_MAX} V` },
+  { key: "current", label: "Current", unit: "A", d: 2, alert: (s) => s.current > CONFIG.CURRENT_MAX, hint: `Alert above ${CONFIG.CURRENT_MAX} A` },
+  { key: "power", label: "Active power", unit: "W", d: 0, hint: "Voltage x current x power factor" },
+  { key: "energy", label: "Cumulative energy", unit: "kWh", d: 3, hint: "Total since the meter started" },
+  { key: "frequency", label: "Frequency", unit: "Hz", d: 2, hint: "Nominal 50 Hz" },
+  { key: "pf", label: "Power factor", unit: "", d: 2, hint: "1.00 means no reactive loss" }
+];
+
+function mountCards() {
+  $("cards").innerHTML = METRICS.map((m) => `
+    <article class="card glass p-4" id="card-${m.key}" aria-labelledby="l-${m.key}">
+      <h3 id="l-${m.key}" class="muted text-sm">${m.label}</h3>
+      <p class="mt-1"><span class="val num text-3xl sm:text-4xl font-bold" id="v-${m.key}">--</span>
+        <span class="muted text-lg">${m.unit}</span></p>
+      <p class="muted text-xs mt-1" id="h-${m.key}">${m.hint}</p>
+    </article>`).join("");
+}
+
+function renderCards(s) {
+  METRICS.forEach((m) => {
+    const bad = s.latest && m.alert && m.alert(s.latest);
+    $(`card-${m.key}`).classList.toggle("alert", !!bad);
+    setText(`v-${m.key}`, fmt(s.latest ? s.latest[m.key] : null, m.d));
+    setText(`h-${m.key}`, bad ? `Out of range. ${m.hint}` : m.hint);
+  });
+  const banner = $("alertBanner");
+  banner.classList.toggle("hidden", !s.alerts.length);
+  setText("alertBanner", s.alerts.length ? `Warning: ${s.alerts.join(", ")}` : "");
+}
+
+let chart;
+function mountChart() {
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const grid = { color: "rgba(255,255,255,.08)" }, ticks = { color: "#a3b5c0" };
+  chart = new Chart($("chart"), {
+    type: "line",
+    data: { labels: [], datasets: [
+      { label: "Power (W)", data: [], borderColor: "#ffb44d", backgroundColor: "rgba(255,180,77,.15)", fill: true, yAxisID: "yP", tension: .3, pointRadius: 0, borderWidth: 2 },
+      { label: "Voltage (V)", data: [], borderColor: "#4fd6c8", yAxisID: "yV", tension: .3, pointRadius: 0, borderWidth: 2 }
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: reduce ? false : { duration: 350 }, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#e9f1f5" } } },
+      scales: {
+        x: { grid, ticks: { ...ticks, maxTicksLimit: 6 } },
+        yP: { position: "left", grid, ticks, title: { display: true, text: "Watts", color: "#ffb44d" } },
+        yV: { position: "right", grid: { drawOnChartArea: false }, ticks, suggestedMin: 180, suggestedMax: 260, title: { display: true, text: "Volts", color: "#4fd6c8" } }
+      }
+    }
+  });
+}
+
+let lastChartTs = 0;
+function renderChart(s) {
+  if (!s.latest || s.latest.ts === lastChartTs) return;
+  lastChartTs = s.latest.ts;
+  const { labels, datasets } = chart.data;
+  labels.push(new Date(s.latest.ts).toLocaleTimeString());
+  datasets[0].data.push(s.latest.power);
+  datasets[1].data.push(s.latest.voltage);
+  while (labels.length > CONFIG.MAX_CHART_POINTS) { labels.shift(); datasets[0].data.shift(); datasets[1].data.shift(); }
+  chart.update();
+  setText("sampleCount", `${labels.length} of ${CONFIG.MAX_CHART_POINTS} points shown`);
+}
+
+function renderBilling(s) {
+  const rate = Math.max(0, num($("tariff").value) ?? 0);
+  
+  // Convert live power from Watts to Kilowatts (kW) for daily/monthly projections
+  const currentKw = s.latest ? s.latest.power / 1000 : 0;
+  
+  // Strictly use the tracked session energy to prevent charging for lifetime hardware usage
+  const sessionKwh = s.sessionKwh || 0;
+
+  setText("costSession", inr(sessionKwh * rate, 4));
+  setText("costDay", inr(currentKw * 24 * rate, 2));
+  setText("costMonth", inr(currentKw * 24 * 30 * rate, 2));
+  setText("recCount", `${s.records.length} samples recorded`);
+}
+
+/* ---------- 6. EVENTS + BOOTSTRAP ---------- */
+function exportCSV() {
+  if (!state.records.length) { $("recCount").textContent = "Nothing to export yet. Wait for the first reading."; return; }
+  const url = URL.createObjectURL(new Blob(["\ufeff" + toCSV(state.records)], { type: "text/csv;charset=utf-8" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: `iot-energylink-${new Date().toISOString().replace(/[:.]/g, "-")}.csv` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function init() {
+  mountCards(); mountChart();
+  try { const t = localStorage.getItem("energylink.tariff.inr"); if (t) $("tariff").value = t; } catch {}
+  subscribe(renderNet); subscribe(renderCards); subscribe(renderChart); subscribe(renderBilling);
+
+  $("demoToggle").addEventListener("change", (e) => {
+    setState({ demoForced: e.target.checked, autoDemo: false });
+    syncDemo(); updateNet();
+  });
+  const onBill = () => { try { localStorage.setItem("energylink.tariff.inr", $("tariff").value); } catch {} renderBilling(state); };
+  $("tariff").addEventListener("input", onBill);
+  $("exportBtn").addEventListener("click", exportCSV);
+
+  if (state.hasConfig) connectFirebase();
+  syncDemo(); startWatchdog(); renderNet(state); renderBilling(state);
+}
+init();
+</script>
+</body>
+</html>
